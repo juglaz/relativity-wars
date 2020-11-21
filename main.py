@@ -281,6 +281,46 @@ class Drone(RWSprite):
                 self.sound_death.play()
             self.death_time = time.time()
 
+
+class Star:
+    def __init__(self, pos, color, radius):
+        self.pos = pos
+        self.color = color
+        self.radius = radius
+
+    def draw(self, screen):
+        pygame.draw.circle(screen, self.color, self.pos, self.radius)
+
+class Stars:
+    colors = ((x, x, x) for x in (80, 120, 145, 180, 225))
+    star_options = tuple(zip((1, 1, 2, 2, 3), (colors)))
+    weights = (60, 30, 15, 7, 3)
+    num_stars = 500
+
+    def __init__(self, screen_shape):
+        self.screen_shape = screen_shape
+        self.velocity = (1, 0)
+        self.init_stars()
+
+    def update(self):
+        for star in self.stars:
+            # offset stars
+            # kill stars
+            # gen stars
+            pass
+
+    def draw(self, screen):
+        for star in self.stars:
+            star.draw(screen)
+
+    def init_stars(self):
+        self.stars = []
+        star_params = random.choices(self.star_options, weights=self.weights, k=self.num_stars)
+        for radius, color in star_params:            
+            pos = (random.randint(0, self.screen_shape[0]), random.randint(0, self.screen_shape[1]))
+            self.stars.append(Star(pos, color, radius))
+
+
 #------------- GAME CLASS -----------------
 class GameParams:
     lives = 5
@@ -351,6 +391,7 @@ class RelativityWars:
         self.level += 1
 
     def setup_game(self):
+        self.stars = Stars(self.screen_shape)
         self.dronespawn_freq = self.game_params.dronespawn_freq
         self.black_hole_group.empty()
         for _ in range(self.game_params.black_holes):
@@ -459,6 +500,7 @@ class RelativityWars:
 
         # Draw
         self.screen.fill((0, 0, 0))
+        self.stars.draw(self.screen)
         self.score_display()
         self.black_hole_group.draw(self.screen)
         self.fighter.draw(self.screen)
