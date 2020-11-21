@@ -333,7 +333,7 @@ class RelativityWars:
         self.screen = screen
         self.screen_width, self.screen_height = self.screen_shape
         self.screen_center = (self.screen_width / 2, self.screen_height / 2)
-        self.START_SCREEN_OFFSET = np.array([self.screen_width - 350, self.screen_height - 480]) / 2
+        self.START_SCREEN_OFFSET = tuple(int(x/2) for x in [self.screen_width - 350, self.screen_height - 480])
 
         self.get_level(level)
 
@@ -492,19 +492,18 @@ class RelativityWars:
         self.screen.blit(self.start_screen, (785, 300))
 
         score_render = self.game_font_small.render(f'Score: {self.score}', True, (255, 255, 255))
-        score_render_rect = score_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + np.array([175, 170])))
+        score_render_rect = score_render.get_rect(center=tuple(x + y for x,y in zip(self.START_SCREEN_OFFSET, (175, 220))))
         self.screen.blit(score_render, score_render_rect)
         
         high_score_render = self.game_font_small.render('High Score', True, (255, 255, 255))
-        high_score_render_rect = high_score_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + np.array([175, 220])))
+        high_score_render_rect = high_score_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + x for x in [175, 220]))
         self.screen.blit(high_score_render, high_score_render_rect)
 
         high_score_value_render = self.game_font_small.render(str(self.high_score), True, (255, 255, 255))
-        high_score_value_render_rect = high_score_value_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + np.array([175, 250])))
+        high_score_value_render_rect = high_score_value_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + x for x in [175, 220]))
         self.screen.blit(high_score_value_render, high_score_value_render_rect)
 
         self.crosshair.draw(self.screen)
 
 
-rw = RelativityWars()
-rw.play()
+RelativityWars().play()
