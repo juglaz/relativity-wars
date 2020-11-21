@@ -7,46 +7,35 @@ import time
 from screeninfo import get_monitors
 
 
+
 pygame.mixer.init()
 pygame.init()
 
-fps = 60
-fpsClock = pygame.time.Clock()
-sound_effects = True
-high_score = 0
-
 monitor = get_monitors()[0]
-screen_shape = screen_width, screen_height = (monitor.width, monitor.height)
-screen_center = (screen_width / 2, screen_height / 2)
+screen_shape = (monitor.width, monitor.height)
 screen = pygame.display.set_mode(screen_shape, pygame.FULLSCREEN)
 
-game_font = pygame.font.Font('assets/Aller_Rg.ttf', 32)
-game_font_small = pygame.font.Font('assets/Aller_Rg.ttf', 26)
 
-
-def calculate_gravity(pos, black_hole_group):
+class RWSprite(pygame.sprite.Sprite):
     GRAVITATIONAL_CONSTANT = 180
     MAX_GRAVITY = 20
-    vector = np.array([0., 0.])
-    for black_hole in black_hole_group:
-        relative_pos = tuple(a - b for a,b in zip(pos, black_hole.rect.center))
-        angle = math.atan(relative_pos[1] / relative_pos[0]) if relative_pos[0] != 0 else math.pi / 2
-        distance = math.sqrt(relative_pos[0]**2 + relative_pos[1]**2)
-        vector += np.array([-GRAVITATIONAL_CONSTANT / math.copysign(distance**1.1, rel) if distance != 0 else 0 for rel in relative_pos])
-    net_gravity = math.sqrt(vector[0]**2 + vector[1]**2)
-    if net_gravity > MAX_GRAVITY:
-        vector *= MAX_GRAVITY / net_gravity
-    return vector
 
+    def __init__(self, black_hole_group):
+        super().__init__()
+        self.black_hole_group = black_hole_group
 
-def score_display():
-    score_surface = game_font.render(f'Score: {score}', True, (200, 200, 200))
-    score_rect = score_surface.get_rect(center=(int(screen_shape[0] / 2), 30))
-    screen.blit(score_surface, score_rect)
-
-    lives_surface = game_font.render(f'Lives: {lives}', True, (170, 170, 170))
-    lives_rect = lives_surface.get_rect(center=(int(screen_shape[0] / 2), 80))
-    screen.blit(lives_surface, lives_rect)
+    def calculate_gravity(self):
+        pos = self.rect.center
+        vector = np.array([0., 0.])
+        for black_hole in self.black_hole_group:
+            relative_pos = tuple(a - b for a,b in zip(pos, black_hole.rect.center))
+            angle = math.atan(relative_pos[1] / relative_pos[0]) if relative_pos[0] != 0 else math.pi / 2
+            distance = math.sqrt(relative_pos[0]**2 + relative_pos[1]**2)
+            vector += np.array([-self.GRAVITATIONAL_CONSTANT / math.copysign(distance**1.1, rel) if distance != 0 else 0 for rel in relative_pos])
+        net_gravity = math.sqrt(vector[0]**2 + vector[1]**2)
+        if net_gravity > self.MAX_GRAVITY:
+            vector *= self.MAX_GRAVITY / net_gravity
+        return vector
 
 
 class BlackHole(pygame.sprite.Sprite):
@@ -70,7 +59,7 @@ class BlackHole(pygame.sprite.Sprite):
             self.image = pygame.transform.scale(self.raw_image.copy(), (self.size, self.size))
 
 
-class Fighter(pygame.sprite.Sprite):
+class Fighter(RWSprite):
     directions = {'right': {'angle': 0},
                   'downright': {'angle': math.radians(45)},
                   'down': {'angle': math.radians(90)},
@@ -80,22 +69,28 @@ class Fighter(pygame.sprite.Sprite):
                   'up': {'angle': math.radians(270)},
                   'upright': {'angle': math.radians(315)}}
     for direction in directions.keys():
-        directions[direction]['image'] = pygame.image.load(f'assets/fighter_{direction}.png')
+        directions[direction]['image'] = pygame.image.load(f'assets/fighter_{direction}.png').convert_alpha()
     torpedo_sound = pygame.mixer.Sound('assets/torpedo.wav')
     death_image = pygame.image.load('assets/fighter-death.png')
     death_sound = pygame.mixer.Sound('assets/fighter-death.wav')
     death_time = None
 
-    def __init__(self, pos, screen_shape):
-        super().__init__()
+    def __init__(self, screen_shape, black_hole_group, torpedo_group, sound_effects=True, pos=None):
+        super().__init__(black_hole_group)
+        self.black_hole_group = black_hole_group
+        self.torpedo_group = torpedo_group
         self.screen_shape = screen_shape
-        self.initial_pos = pos
+        self.sound_effects = sound_effects
+        if pos is None:
+            self.initial_pos = (100, 100)
+        else:
+            self.initial_pos = pos
         self.velocity = [0, 0]  # speed x, speed y
         self.direction = 'right'  # degrees
         self.acceleration = 1
 
         self.image = self.directions[self.direction]['image']
-        self.rect = self.image.get_rect(center=pos)
+        self.rect = self.image.get_rect(center=self.initial_pos)
 
     def _update_direction(self):
         keys = pygame.key.get_pressed()
@@ -141,13 +136,14 @@ class Fighter(pygame.sprite.Sprite):
         self.velocity = [a + b for a,b in zip(self.velocity, gravity)]
         self.velocity = [v * (1 - DRAG) for v in self.velocity]
 
-    def update(self, gravity):
+    def update(self):
         if self.death_time:
             if time.time() > self.death_time + 1:
                 self.reset()
         else:
             self._update_direction()
             self.image = self.directions[self.direction]['image']
+        gravity = self.calculate_gravity()
         self._accelerate(gravity)
         self._move()
 
@@ -169,23 +165,24 @@ class Fighter(pygame.sprite.Sprite):
             angle = math.degrees(math.atan(delta_y / delta_x)) if delta_x != 0 else 0
             if delta_x < 0:
                 angle += 180
-            torpedo_group.add(Torpedo((init_x, init_y), angle, screen_shape, black_hole_group))
-            if sound_effects:
+            self.torpedo_group.add(Torpedo((init_x, init_y), angle, self.screen_shape, self.black_hole_group))
+            if self.sound_effects:
                 self.torpedo_sound.play()
 
     def destroy(self, angle):
         if self.death_time is None:
             self.image = pygame.transform.rotate(self.death_image.copy(), angle)
-            if sound_effects:
+            if self.sound_effects:
                 self.death_sound.play()
             self.death_time = time.time()
 
 
 class Crosshair(pygame.sprite.Sprite):
+    image = pygame.image.load('assets/crosshair.png').convert_alpha()
+    rect = image.get_rect()
+
     def __init__(self):
         super().__init__()
-        self.image = pygame.image.load('assets/crosshair.png')
-        self.rect = self.image.get_rect()
 
     def update(self):
         self.rect.center = pygame.mouse.get_pos()
@@ -194,11 +191,11 @@ class Crosshair(pygame.sprite.Sprite):
         screen.blit(self.image, self.rect)
 
 
-class Torpedo(pygame.sprite.Sprite):
+class Torpedo(RWSprite):
     raw_image = pygame.image.load('assets/torpedo.png').convert_alpha()
 
     def __init__(self, pos, angle, screen_shape, black_hole_group, speed=20):
-        super().__init__()
+        super().__init__(black_hole_group)
         self.image = self.raw_image.copy()
         self.speed = speed
         self.angle = angle
@@ -210,12 +207,9 @@ class Torpedo(pygame.sprite.Sprite):
         self.screen_shape =  screen_shape
         self.black_hole_group = black_hole_group
 
-    def _calculate_gravity(self):
-        return calculate_gravity(self.rect.center, self.black_hole_group)
-
     def update(self):
         init_angle = self.angle
-        gravity = self._calculate_gravity()
+        gravity = self.calculate_gravity()
         self.velocity = [a + b for a,b in zip(self.velocity, gravity)]
         self.rect.center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
         self.angle = math.degrees(math.atan(-self.velocity[1] / self.velocity[0])) if self.velocity[0] != 0 else 90
@@ -232,17 +226,19 @@ class Torpedo(pygame.sprite.Sprite):
         screen.blit(self.image, self.rect)
 
 
-class Drone(pygame.sprite.Sprite):
-    image = pygame.image.load('assets/drone.png').convert_alpha()
-    image_death = pygame.image.load('assets/drone-death.png').convert_alpha()
+class Drone(RWSprite):
     sound_death = pygame.mixer.Sound('assets/drone-death.wav')
     death_time = None
     torpedo_sound = pygame.mixer.Sound('assets/torpedo.wav')
+    image = pygame.image.load('assets/drone.png').convert_alpha()
+    image_death = pygame.image.load('assets/drone-death.png').convert_alpha()
 
-    def __init__(self, screen_shape, black_hole_group):
-        super().__init__()
+    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects):
+        super().__init__(black_hole_group)
+        self.enemy_torpedo_group = enemy_torpedo_group
         self.screen_shape = screen_shape
         self.black_hole_group = black_hole_group
+        self.sound_effects = sound_effects
         speed = 8
         if random.choice([True, False]):
             pos = (random.choice([0, screen_shape[0]]), random.randrange(0, screen_shape[1]))
@@ -255,11 +251,8 @@ class Drone(pygame.sprite.Sprite):
         self.init_time = time.time()
         self.last_fired_time = self.init_time
 
-    def _calculate_gravity(self):
-        return calculate_gravity(self.rect.center, self.black_hole_group)
-
     def update(self):
-        gravity = self._calculate_gravity()
+        gravity = self.calculate_gravity()
         self.velocity = [(a + b) * (1 - self.drag) for a,b in zip(self.velocity, gravity)]
         self.rect.center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
         if not 0 <= self.rect.center[0] <= self.screen_shape[0] or not 0 <= self.rect.center[1] <= self.screen_shape[1]:
@@ -270,8 +263,8 @@ class Drone(pygame.sprite.Sprite):
             self.kill()
         elif time.time() > self.last_fired_time + 1.5 and self.death_time is None:
             for angle in np.arange(0, 7) * 45:
-                enemy_torpedo_group.add(Torpedo(self.rect.center, angle, self.screen_shape, self.black_hole_group, speed=10))
-            if sound_effects:
+                self.enemy_torpedo_group.add(Torpedo(self.rect.center, angle, self.screen_shape, self.black_hole_group, speed=10))
+            if self.sound_effects:
                 self.torpedo_sound.play()
             self.last_fired_time = time.time()
         elif self.death_time:
@@ -284,183 +277,234 @@ class Drone(pygame.sprite.Sprite):
     def destroy(self, angle):
         if self.death_time is None:
             self.image = pygame.transform.rotate(self.image_death.copy(), angle)
-            if sound_effects:
+            if self.sound_effects:
                 self.sound_death.play()
             self.death_time = time.time()
 
-
-def setup_game():
-    global score, lives, dronespawn_freq
-    score = 0
+#------------- GAME CLASS -----------------
+class GameParams:
     lives = 5
     dronespawn_freq = 3000
-    black_hole_group.empty()
-    for _ in range(2):
-        pos = (random.randrange(200, screen_shape[0] - 200), random.randrange(200, screen_shape[1] - 200))
-        size = random.randrange(50, 200)
-        black_hole = BlackHole(pos, size=size)
-        black_hole_group.add(black_hole)
-    pygame.time.set_timer(DRONESPAWN, dronespawn_freq)
-    pygame.time.set_timer(INCREASEDRONESPAWN, 3000)
-    fighter.reset()
-
-game_over_sound = pygame.mixer.Sound('assets/game-over.wav')
-game_over_10plus = pygame.mixer.Sound('assets/game-over-10plus.wav')
-game_over_20plus = pygame.mixer.Sound('assets/game-over-20plus.wav')
-game_over_50plus = pygame.mixer.Sound('assets/game-over-50plus.wav')
-def game_over():
-    global high_score, score
-    high_score = max([score, high_score])
-
-    fighter.reset()
-    drone_group.empty()
-    torpedo_group.empty()
-    enemy_torpedo_group.empty()
-    pygame.time.set_timer(DRONESPAWN, 0)
+    dronespawn_freq_ramp = 15
+    black_holes = 2
+    
+    def __init__(self, level):
+        self.level = level
 
 
-START_SCREEN_OFFSET = np.array([screen_width - 350, screen_height - 480]) / 2
-def is_mouse_over_button(button):
-    button_coords = {'play': ((98, 281), (230, 341)),
-                     'quit': ((12, 380), (91, 402)),
-                     'music': ((148, 385), (159, 396)),
-                     'effects': ((256, 385), (266, 396))}
-    area = button_coords.get(button)
-    area = tuple(np.array(point) + START_SCREEN_OFFSET for point in area)
-    pos = pygame.mouse.get_pos()
-    return area[0][0] < pos[0] < area[1][0] and area[0][1] < pos[1] < area[1][1]
+class RelativityWars:
+    fps = 60
+    fpsClock = pygame.time.Clock()
 
+    score = 0
+    high_score = 0
+    lives = 5
+    level = 0
 
-black_hole_group = pygame.sprite.Group()
-fighter = Fighter((100, 100), screen_shape)
-torpedo_group = pygame.sprite.Group()
-enemy_torpedo_group = pygame.sprite.Group()
+    sound_effects = True
 
-pygame.mouse.set_visible(False)
-crosshair = Crosshair()
+    game_font = pygame.font.Font('assets/Aller_Rg.ttf', 32)
+    game_font_small = pygame.font.Font('assets/Aller_Rg.ttf', 26)
 
-DRONESPAWN = pygame.USEREVENT
-INCREASEDRONESPAWN = pygame.USEREVENT + 1
-drone_group = pygame.sprite.Group()
+    game_over_sound = pygame.mixer.Sound('assets/game-over.wav')
+    game_over_10plus = pygame.mixer.Sound('assets/game-over-10plus.wav')
+    game_over_20plus = pygame.mixer.Sound('assets/game-over-20plus.wav')
+    game_over_50plus = pygame.mixer.Sound('assets/game-over-50plus.wav')
 
-start_screen = pygame.image.load('assets/start-screen.png').convert()
+    start_screen = pygame.image.load('assets/start-screen.png').convert()
 
+    black_hole_group = pygame.sprite.Group()
+    torpedo_group = pygame.sprite.Group()
+    enemy_torpedo_group = pygame.sprite.Group()
 
-game_active = False
-pygame.mixer.music.load('assets/game-music.wav')
-pygame.mixer.music.set_volume(0.3)
-pygame.mixer.music.play()
-setup_game()
+    pygame.mouse.set_visible(False)
+    crosshair = Crosshair()
 
+    DRONESPAWN = pygame.USEREVENT
+    INCREASEDRONESPAWN = pygame.USEREVENT + 1
+    drone_group = pygame.sprite.Group()
 
-while True:
-    events = pygame.event.get()
-    for event in events:
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
-    # ======= GAME LOOP ========== #
-    if game_active:
+    game_active = False
+    pygame.mixer.music.load('assets/game-music.wav')
+    pygame.mixer.music.set_volume(0.3)
+
+    def __init__(self, level=1, fighter=None, screen=screen, screen_shape=screen_shape):
+        self.screen_shape = screen_shape
+        self.screen = screen
+        self.screen_width, self.screen_height = self.screen_shape
+        self.screen_center = (self.screen_width / 2, self.screen_height / 2)
+        self.START_SCREEN_OFFSET = np.array([self.screen_width - 350, self.screen_height - 480]) / 2
+
+        self.get_level(level)
+
+        if isinstance(fighter, Fighter):
+            self.fighter = fighter
+        else:
+            self.fighter = Fighter(self.screen_shape, self.black_hole_group, self.torpedo_group, sound_effects=self.sound_effects)
+
+    def get_level(self, level):
+        self.level = level
+        self.game_params = GameParams(level)
+
+    def next_level(self):
+        self.game_params = GameParams(self.level + 1)
+        self.level += 1
+
+    def setup_game(self):
+        self.dronespawn_freq = self.game_params.dronespawn_freq
+        self.black_hole_group.empty()
+        for _ in range(self.game_params.black_holes):
+            pos = (random.randrange(200, self.screen_shape[0] - 200), random.randrange(200, self.screen_shape[1] - 200))
+            size = random.randrange(50, 200)
+            black_hole = BlackHole(pos, size=size)
+            self.black_hole_group.add(black_hole)
+        pygame.time.set_timer(self.DRONESPAWN, self.dronespawn_freq)
+        pygame.time.set_timer(self.INCREASEDRONESPAWN, 3000)
+        self.fighter.reset()
+
+    def game_over(self):
+        self.high_score = max([self.score, self.high_score])
+
+        self.fighter.reset()
+        self.drone_group.empty()
+        self.torpedo_group.empty()
+        self.enemy_torpedo_group.empty()
+        pygame.time.set_timer(self.DRONESPAWN, 0)
+
+    def score_display(self):
+        score_surface = self.game_font.render(f'Score: {self.score}', True, (200, 200, 200))
+        score_rect = score_surface.get_rect(center=(int(self.screen_shape[0] / 2), 30))
+        self.screen.blit(score_surface, score_rect)
+
+        lives_surface = self.game_font.render(f'Lives: {self.lives}', True, (170, 170, 170))
+        lives_rect = lives_surface.get_rect(center=(int(self.screen_shape[0] / 2), 80))
+        self.screen.blit(lives_surface, lives_rect)
+
+    def is_mouse_over_button(self, button):
+        button_coords = {'play': ((98, 281), (230, 341)),
+                        'quit': ((12, 380), (91, 402)),
+                        'music': ((148, 385), (159, 396)),
+                        'effects': ((256, 385), (266, 396))}
+        area = button_coords.get(button)
+        area = tuple(np.array(point) + self.START_SCREEN_OFFSET for point in area)
+        pos = pygame.mouse.get_pos()
+        return area[0][0] < pos[0] < area[1][0] and area[0][1] < pos[1] < area[1][1]
+
+    def play(self):
+        pygame.mixer.music.play()
+        self.setup_game()
+
+        while True:
+            events = pygame.event.get()
+            for event in events:
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if self.game_active:
+                    self.game_loop(events)
+                else:
+                    self.start_screen_loop(events)
+            pygame.display.flip()
+            self.fpsClock.tick(self.fps)
+
+    def game_loop(self, events):
         for event in events:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    game_active = False
-                    game_over()
+                    self.game_active = False
+                    self.game_over()
                     break
                 elif event.key == pygame.K_r:
-                    fighter.reset()
+                    self.fighter.reset()
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                fighter.fire()
-            elif event.type == DRONESPAWN:
-                drone_group.add(Drone(screen_shape, black_hole_group))
-            elif event.type == INCREASEDRONESPAWN:
-                dronespawn_freq = max([0, dronespawn_freq - 15])
-                pygame.time.set_timer(DRONESPAWN, dronespawn_freq)
-                for black_hole in black_hole_group:
+                self.fighter.fire()
+            elif event.type == self.DRONESPAWN:
+                self.drone_group.add(Drone(self.screen_shape, self.black_hole_group, self.enemy_torpedo_group, sound_effects=self.sound_effects))
+            elif event.type == self.INCREASEDRONESPAWN:
+                self.dronespawn_freq = max([0, self.dronespawn_freq - self.game_params.dronespawn_freq_ramp])
+                pygame.time.set_timer(self.DRONESPAWN, self.dronespawn_freq)
+                for black_hole in self.black_hole_group:
                     black_hole.enlarge()
     
-        fighter_collions = pygame.sprite.spritecollide(fighter, enemy_torpedo_group, True)
-        if fighter_collions:
-            lives -= 1
-            if lives < 0:
-                if sound_effects:
-                    if score >= 50:
-                        game_over_50plus.play()
-                    elif score >= 20:
-                        game_over_20plus.play()
-                    elif score >= 10:
-                        game_over_10plus.play()
+        fighter_collisions = pygame.sprite.spritecollide(self.fighter, self.enemy_torpedo_group, True)
+        if fighter_collisions:
+            self.lives -= 1
+            if self.lives < 0:
+                if self.sound_effects:
+                    if self.score >= 50:
+                        self.game_over_50plus.play()
+                    elif self.score >= 20:
+                        self.game_over_20plus.play()
+                    elif self.score >= 10:
+                        self.game_over_10plus.play()
                     else:
-                        game_over_sound.play()
-                game_active = False
-                game_over()
+                        self.game_over_sound.play()
+                self.game_active = False
+                self.game_over()
             else:
-                fighter.destroy(fighter_collions[0].angle)
+                self.fighter.destroy(fighter_collisions[0].angle)
 
-        hit_drones = pygame.sprite.groupcollide(drone_group, torpedo_group, False, True)
+        hit_drones = pygame.sprite.groupcollide(self.drone_group, self.torpedo_group, False, True)
         if hit_drones:
             for drone, torpedos in hit_drones.items():
-                score = score + 1
+                self.score += 1
                 drone.destroy(torpedos[0].angle)
 
         # Update
-        gravity = calculate_gravity(fighter.rect.center, black_hole_group)
-        fighter.update(gravity)
-        crosshair.update()
-        torpedo_group.update()
-        enemy_torpedo_group.update()
-        drone_group.update()
+        self.fighter.update()
+        self.crosshair.update()
+        self.torpedo_group.update()
+        self.enemy_torpedo_group.update()
+        self.drone_group.update()
 
         # Draw
-        screen.fill((0, 0, 0))
-        score_display()
-        black_hole_group.draw(screen)
-        fighter.draw(screen)
-        crosshair.draw(screen)
-        torpedo_group.draw(screen)
-        enemy_torpedo_group.draw(screen)
-        drone_group.draw(screen)
-    # ======= END GAME LOOP ========== #
+        self.screen.fill((0, 0, 0))
+        self.score_display()
+        self.black_hole_group.draw(self.screen)
+        self.fighter.draw(self.screen)
+        self.crosshair.draw(self.screen)
+        self.torpedo_group.draw(self.screen)
+        self.enemy_torpedo_group.draw(self.screen)
+        self.drone_group.draw(self.screen)
 
-    # ======= MENU LOOP ========== #
-    else:
+    def start_screen_loop(self, events):
         for event in events:
             if event.type == pygame.MOUSEBUTTONDOWN:
-                if is_mouse_over_button('quit'):
+                if self.is_mouse_over_button('quit'):
                     pygame.quit()
                     sys.exit()
-                elif is_mouse_over_button('play'):
-                    game_active = True
-                    setup_game()
-                elif is_mouse_over_button('music'):
+                elif self.is_mouse_over_button('play'):
+                    self.game_active = True
+                    self.setup_game()
+                elif self.is_mouse_over_button('music'):
                     if pygame.mixer.music.get_busy():
                         pygame.mixer.music.stop()
                     else:
                         pygame.mixer.music.play()
-                elif is_mouse_over_button('effects'):
-                    sound_effects = not sound_effects
+                elif self.is_mouse_over_button('effects'):
+                    self.sound_effects = not self.sound_effects
 
         # Update
-        crosshair.update()
+        self.crosshair.update()
 
         # Draw
-        screen.fill((0, 0, 0))
-        screen.blit(start_screen, (785, 300))
+        self.screen.fill((0, 0, 0))
+        self.screen.blit(self.start_screen, (785, 300))
 
-        score_render = game_font_small.render(f'Score: {score}', True, (255, 255, 255))
-        score_render_rect = score_render.get_rect(center=tuple(START_SCREEN_OFFSET + np.array([175, 170])))
-        screen.blit(score_render, score_render_rect)
+        score_render = self.game_font_small.render(f'Score: {self.score}', True, (255, 255, 255))
+        score_render_rect = score_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + np.array([175, 170])))
+        self.screen.blit(score_render, score_render_rect)
         
-        high_score_render = game_font_small.render('High Score', True, (255, 255, 255))
-        high_score_render_rect = high_score_render.get_rect(center=tuple(START_SCREEN_OFFSET + np.array([175, 220])))
-        screen.blit(high_score_render, high_score_render_rect)
+        high_score_render = self.game_font_small.render('High Score', True, (255, 255, 255))
+        high_score_render_rect = high_score_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + np.array([175, 220])))
+        self.screen.blit(high_score_render, high_score_render_rect)
 
-        high_score_value_render = game_font_small.render(str(high_score), True, (255, 255, 255))
-        high_score_value_render_rect = high_score_value_render.get_rect(center=tuple(START_SCREEN_OFFSET + np.array([175, 250])))
-        screen.blit(high_score_value_render, high_score_value_render_rect)
+        high_score_value_render = self.game_font_small.render(str(self.high_score), True, (255, 255, 255))
+        high_score_value_render_rect = high_score_value_render.get_rect(center=tuple(self.START_SCREEN_OFFSET + np.array([175, 250])))
+        self.screen.blit(high_score_value_render, high_score_value_render_rect)
 
-        crosshair.draw(screen)
-    # ======= END MENU LOOP ========== #
+        self.crosshair.draw(self.screen)
 
-    pygame.display.flip()
-    fpsClock.tick(fps)
+
+rw = RelativityWars()
+rw.play()
