@@ -289,25 +289,51 @@ class Star:
         self.radius = radius
 
     def draw(self, screen):
-        pygame.draw.circle(screen, self.color, self.pos, self.radius)
+        posint = tuple(map(int, self.pos))
+        pygame.draw.circle(screen, self.color, posint, self.radius)
 
 class Stars:
     colors = ((x, x, x) for x in (80, 120, 145, 180, 225))
     star_options = tuple(zip((1, 1, 2, 2, 3), (colors)))
     weights = (60, 30, 15, 7, 3)
     num_stars = 500
+    velocity = (-.2, .1)
 
     def __init__(self, screen_shape):
         self.screen_shape = screen_shape
-        self.velocity = (1, 0)
         self.init_stars()
 
     def update(self):
-        for star in self.stars:
+        num_new = 0
+        for i in reversed(range(len(self.stars))):
+            star = self.stars[i]
             # offset stars
-            # kill stars
-            # gen stars
-            pass
+            star.pos = tuple(p + v for p,v in zip(star.pos, self.velocity))
+            # delete stars off-screen
+            if not (0 < star.pos[0] < self.screen_shape[0] and 0 < star.pos[1] < self.screen_shape[1]):
+                del self.stars[i]
+                num_new += 1
+        # gen stars
+        self.new_stars(num_new)
+
+    def new_stars(self, num_new):
+        star_params = random.choices(self.star_options, weights=self.weights, k=num_new)
+
+        axis_weights = tuple(map(abs, self.velocity))
+        axes = random.choices(('x', 'y'), weights=axis_weights, k=num_new)
+
+        for (radius, color), axis in zip(star_params, axes):
+            if axis == 'x':
+                pos = (
+                    random.randint(0, self.screen_shape[0]),
+                    0 if self.velocity[1] > 0 else self.screen_shape[1]
+                )
+            else:
+                pos = (
+                    0 if self.velocity[0] > 0 else self.screen_shape[0],
+                    random.randint(0, self.screen_shape[1])
+                )
+            self.stars.append(Star(pos, color, radius))
 
     def draw(self, screen):
         for star in self.stars:
@@ -497,6 +523,7 @@ class RelativityWars:
         self.torpedo_group.update()
         self.enemy_torpedo_group.update()
         self.drone_group.update()
+        self.stars.update()
 
         # Draw
         self.screen.fill((0, 0, 0))
