@@ -4,6 +4,7 @@ import math
 import numpy as np
 import random
 import time
+import json
 from screeninfo import get_monitors
 from scipy.stats import skewnorm
 
@@ -36,6 +37,58 @@ class RWSprite(pygame.sprite.Sprite):
         if net_gravity > self.MAX_GRAVITY:
             vector *= self.MAX_GRAVITY / net_gravity
         return vector
+
+    @staticmethod
+    def velocity_to_angle_and_speed(velocity):
+        angle = math.degrees(math.atan(-velocity[1] / velocity[0])) if velocity[0] != 0 else 90
+        if velocity[0] < 0:
+            angle += 180
+        speed = math.sqrt(velocity[0]**2 + velocity[1]**2)
+        return angle, speed
+    
+class DroneBase(RWSprite):
+    torpedo_sound = pygame.mixer.Sound('assets/torpedo.wav')
+    speed = 3
+    drag = 0.1
+    death_time = None
+
+    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects):
+        super().__init__(black_hole_group)
+        self.enemy_torpedo_group = enemy_torpedo_group
+        self.screen_shape = screen_shape
+        self.sound_effects = sound_effects
+        self.random_init()
+        self.init_time = time.time()
+        self.last_fired_time = self.init_time
+
+    def random_init(self):
+        if random.choice([True, False]):
+            self.pos = (random.choice([0, self.screen_shape[0]]), random.randrange(0, self.screen_shape[1]))
+            self.velocity = (self.speed * (1 if self.pos[0] == 0 else -1), random.choice([-3, 3]))
+        else:
+            self.pos = (random.randrange(0, self.screen_shape[0]), random.choice([0, screen_shape[1]]))
+            self.velocity = (random.choice([-3, 3]), self.speed * (1 if self.pos[1] == 0 else -1))
+        self.rect = self.image.get_rect(center=self.pos)
+    
+    def update(self):
+        self.accelerate()
+        self.pos = [a + b for a,b in zip(self.pos, self.velocity)]
+        self.rect.center = self.pos
+        if not 0 <= self.rect.center[0] <= self.screen_shape[0] or not 0 <= self.rect.center[1] <= self.screen_shape[1]:
+            self.kill()
+        elif pygame.sprite.spritecollide(self, self.black_hole_group, False):
+            self.kill()
+
+    def accelerate(self):
+        gravity = self.calculate_gravity()
+        self.velocity = [(a + b) * (1 - self.drag) for a,b in zip(self.velocity, gravity)]
+
+    def destroy(self, angle):
+        if self.death_time is None:
+            self.image = pygame.transform.rotate(self.image_death.copy(), angle)
+            if self.sound_effects:
+                self.sound_death.play()
+            self.death_time = time.time()
 
 
 class BlackHole(pygame.sprite.Sprite):
@@ -290,10 +343,7 @@ class Torpedo(RWSprite):
         gravity = self.calculate_gravity()
         self.velocity = [a + b for a,b in zip(self.velocity, gravity)]
         self.rect.center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
-        self.angle = math.degrees(math.atan(-self.velocity[1] / self.velocity[0])) if self.velocity[0] != 0 else 90
-        if self.velocity[0] < 0:
-            self.angle += 180
-        # self.image = pygame.transform.rotate(self.image, self.angle - init_angle)
+        self.angle, _ = self.velocity_to_angle_and_speed(self.velocity)
         self.image = pygame.transform.rotate(self.raw_image.copy(), self.angle)
         if not 0 < self.rect.center[0] < self.screen_shape[0] or not 0 < self.rect.center[1] < self.screen_shape[1]:
             self.kill()
@@ -304,42 +354,40 @@ class Torpedo(RWSprite):
         screen.blit(self.image, self.rect)
 
 
-class Drone(RWSprite):
-    sound_death = pygame.mixer.Sound('assets/drone-death.wav')
-    death_time = None
-    torpedo_sound = pygame.mixer.Sound('assets/torpedo.wav')
-    image = pygame.image.load('assets/drone.png').convert_alpha()
-    image_death = pygame.image.load('assets/drone-death.png').convert_alpha()
+class EnemyFighter(DroneBase):
+    raw_image = pygame.image.load('assets/fighter_red_right.png').convert_alpha()
+    image = raw_image.copy()
+    image_death = pygame.image.load('assets/fighter-death.png')
+    sound_death = pygame.mixer.Sound('assets/fighter-death.wav')
+    speed = 8
 
-    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects):
-        super().__init__(black_hole_group)
-        self.enemy_torpedo_group = enemy_torpedo_group
-        self.screen_shape = screen_shape
-        self.black_hole_group = black_hole_group
-        self.sound_effects = sound_effects
-        speed = 8
-        if random.choice([True, False]):
-            pos = (random.choice([0, screen_shape[0]]), random.randrange(0, screen_shape[1]))
-            self.velocity = (speed * (1 if pos[0] == 0 else -1), random.choice([-3, 3]))
-        else:
-            pos = (random.randrange(0, screen_shape[0]), random.choice([0, screen_shape[1]]))
-            self.velocity = (random.choice([-3, 3]), speed * (1 if pos[1] == 0 else -1))
-        self.rect = self.image.get_rect(center=pos)
-        self.drag = 0.1
-        self.init_time = time.time()
-        self.last_fired_time = self.init_time
+    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects, fighter):
+        super().__init__(screen_shape, black_hole_group, enemy_torpedo_group, sound_effects)
+        self.fighter = fighter
 
     def update(self):
+        super().update()
+
+    def accelerate(self):
         gravity = self.calculate_gravity()
-        self.velocity = [(a + b) * (1 - self.drag) for a,b in zip(self.velocity, gravity)]
-        self.rect.center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
-        if not 0 <= self.rect.center[0] <= self.screen_shape[0] or not 0 <= self.rect.center[1] <= self.screen_shape[1]:
+        rel_pos = [e - f for e,f in zip(self.pos, self.fighter.pos)]
+        self.direction = 1
+
+
+class Drone(DroneBase):
+    sound_death = pygame.mixer.Sound('assets/drone-death.wav')
+    image = pygame.image.load('assets/drone.png').convert_alpha()
+    image_death = pygame.image.load('assets/drone-death.png').convert_alpha()
+    speed = 8
+
+    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects):
+        super().__init__(screen_shape, black_hole_group, enemy_torpedo_group, sound_effects)
+
+    def update(self):
+        super().update()
+        if time.time() > self.init_time + 10:
             self.kill()
-        elif pygame.sprite.spritecollide(self, self.black_hole_group, False):
-            self.kill()
-        elif time.time() > self.init_time + 10:
-            self.kill()
-        elif time.time() > self.last_fired_time + 3 and self.death_time is None:
+        elif time.time() > self.last_fired_time + 1.5 and self.death_time is None:
             for angle in np.arange(0, 7) * 45:
                 self.enemy_torpedo_group.add(Torpedo(self.rect.center, angle, self.screen_shape, self.black_hole_group, speed=10))
             if self.sound_effects:
@@ -349,53 +397,23 @@ class Drone(RWSprite):
             if time.time() > self.death_time + 0.5:
                 self.kill()
 
-    def draw(self, screen):
-        screen.blit(self.image, self.rect)
 
-    def destroy(self, angle):
-        if self.death_time is None:
-            self.image = pygame.transform.rotate(self.image_death.copy(), angle)
-            if self.sound_effects:
-                self.sound_death.play()
-            self.death_time = time.time()
-
-
-class Powerup(RWSprite):
+class Powerup(DroneBase):
     images = {
         'shield': pygame.image.load('assets/shield_orb.png').convert_alpha(),
     }
+    speed = 6
 
     def __init__(self, power, black_hole_group, screen_shape, sound_effects):
-        self.black_hole_group = black_hole_group
-        super().__init__(black_hole_group)
-        self.power = power
         self.image = self.images.get(power)
-        speed = 6
-        self.screen_shape = screen_shape
-        self.sound_effects = sound_effects
-        if random.choice([True, False]):
-            pos = (random.choice([0, screen_shape[0]]), random.randrange(0, screen_shape[1]))
-            self.velocity = (speed * (1 if pos[0] == 0 else -1), random.choice([-3, 3]))
-        else:
-            pos = (random.randrange(0, screen_shape[0]), random.choice([0, screen_shape[1]]))
-            self.velocity = (random.choice([-3, 3]), speed * (1 if pos[1] == 0 else -1))
-        self.rect = self.image.get_rect(center=pos)
-        self.drag = 0.1
-        self.init_time = time.time()
+        super().__init__(screen_shape, black_hole_group, None, sound_effects)
+        self.power = power
+        self.random_init()
 
     def update(self):
-        gravity = self.calculate_gravity()
-        self.velocity = [(a + b) * (1 - self.drag) for a,b in zip(self.velocity, gravity)]
-        self.rect.center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
-        if not 0 <= self.rect.center[0] <= self.screen_shape[0] or not 0 <= self.rect.center[1] <= self.screen_shape[1]:
+        super().update()
+        if time.time() > self.init_time + 10:
             self.kill()
-        elif pygame.sprite.spritecollide(self, self.black_hole_group, False):
-            self.kill()
-        elif time.time() > self.init_time + 10:
-            self.kill()
-
-    def draw(self, screen):
-        screen.blit(self.image, self.rect)
 
 
 class Star:
@@ -467,11 +485,11 @@ class Stars:
 #------------- GAME CLASS -----------------
 class GameParams:
     lives = 5
-    dronespawn_freq = 3000
+    dronespawn_freq = 2000
     dronespawn_freq_ramp = 15
     black_holes = 2
     powerupspawn_freq = 10000
-    nextlevel_freq = 2 * 60 * 1000
+    nextlevel_freq = 1 * 60 * 1000
     
     def __init__(self, level):
         self.level = level
@@ -486,7 +504,6 @@ class RelativityWars:
     fpsClock = pygame.time.Clock()
 
     score = 0
-    high_score = 0
     lives = 5
     level = 0
 
@@ -533,6 +550,7 @@ class RelativityWars:
         self.screen_width, self.screen_height = self.screen_shape
         self.screen_center = (int(self.screen_width / 2), int(self.screen_height / 2))
         self.START_SCREEN_OFFSET = tuple(int(x/2) for x in [self.screen_width - 350, self.screen_height - 480])
+        self.load_vars()  # loads high_score
 
         self.boost_bar_pos = (self.screen_shape[0] - 320, self.screen_shape[1] - 50)
 
@@ -572,6 +590,7 @@ class RelativityWars:
         self.fighter.reset()
         self.level_start_time = time.time()
         self.lives = 5
+        self.fighter.shields = False
 
     def game_over(self):
         self.high_score = max([self.score, self.high_score])
@@ -601,7 +620,7 @@ class RelativityWars:
             boost_color = (53, 172, 240)
             boost_progress = 1
         else:
-            boost_color =  (66, 159, 212)
+            boost_color =  (86, 138, 168)
         boost_rect = pygame.Rect(self.boost_bar_pos[0] + 158,
                                  self.boost_bar_pos[1] + 11,
                                  int(boost_progress * 130),
@@ -627,8 +646,7 @@ class RelativityWars:
             events = pygame.event.get()
             for event in events:
                 if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
+                    self.exit()
             if not self.game_active:
                 self.start_screen_loop(events)
             elif self.next_level_transition:
@@ -637,6 +655,20 @@ class RelativityWars:
                 self.game_loop(events)
             pygame.display.flip()
             self.fpsClock.tick(self.fps)
+
+    def load_vars(self):
+        with open('vars.json', 'r') as f:
+            myvars = json.loads(f.read())
+            self.high_score = myvars.get('high_score') or 0
+
+    def write_vars(self):
+        with open('vars.json', 'w') as f:
+            f.write(json.dumps({'high_score': self.high_score}))
+
+    def exit(self):
+        self.write_vars()
+        pygame.quit()
+        sys.exit()
 
     def game_loop(self, events):
         for event in events:
@@ -722,8 +754,7 @@ class RelativityWars:
         for event in events:
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if self.is_mouse_over_button('quit'):
-                    pygame.quit()
-                    sys.exit()
+                    self.exit()
                 elif self.is_mouse_over_button('play'):
                     self.next_level_transition = True
                     self.next_level_transition_start_time = time.time()
