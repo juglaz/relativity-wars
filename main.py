@@ -404,9 +404,15 @@ class GameParams:
     dronespawn_freq_ramp = 15
     black_holes = 2
     powerupspawn_freq = 10000
+    # nextlevel_freq = 2 * 60 * 1000
+    nextlevel_freq = 5000
     
     def __init__(self, level):
         self.level = level
+        self.black_holes += level - 1
+        self.powerupspawn_freq -= 1000 * (level - 1)
+        self.dronespawn_freq = int(self.dronespawn_freq * 0.8**(level - 1))
+        self.dronespawn_freq_ramp += 10 * (level - 1)
 
 
 class RelativityWars:
@@ -429,6 +435,7 @@ class RelativityWars:
     game_over_50plus = pygame.mixer.Sound('assets/game-over-50plus.wav')
 
     start_screen = pygame.image.load('assets/start-screen.png').convert()
+    next_level_images = [pygame.image.load(f'assets/next_level_{i + 1}.png').convert_alpha() for i in range(3)]
 
     black_hole_group = pygame.sprite.Group()
     torpedo_group = pygame.sprite.Group()
@@ -441,6 +448,10 @@ class RelativityWars:
     DRONESPAWN = pygame.USEREVENT
     INCREASEDRONESPAWN = pygame.USEREVENT + 1
     POWERUPSPAWN = pygame.USEREVENT + 2
+    NEXTLEVEL = pygame.USEREVENT + 3
+    next_level_transition = True
+    next_level_image_scale = 0.1
+    next_level_transition_start_time = 0
     drone_group = pygame.sprite.Group()
 
     game_active = False
@@ -451,7 +462,7 @@ class RelativityWars:
         self.screen_shape = screen_shape
         self.screen = screen
         self.screen_width, self.screen_height = self.screen_shape
-        self.screen_center = (self.screen_width / 2, self.screen_height / 2)
+        self.screen_center = (int(self.screen_width / 2), int(self.screen_height / 2))
         self.START_SCREEN_OFFSET = tuple(int(x/2) for x in [self.screen_width - 350, self.screen_height - 480])
 
         self.get_level(level)
@@ -482,6 +493,7 @@ class RelativityWars:
         pygame.time.set_timer(self.DRONESPAWN, self.dronespawn_freq)
         pygame.time.set_timer(self.INCREASEDRONESPAWN, 3000)
         pygame.time.set_timer(self.POWERUPSPAWN, self.powerupspawn_freq)
+        pygame.time.set_timer(self.NEXTLEVEL, self.game_params.nextlevel_freq)
         self.fighter.reset()
 
     def game_over(self):
@@ -522,10 +534,12 @@ class RelativityWars:
                 if event.type == pygame.QUIT:
                     pygame.quit()
                     sys.exit()
-            if self.game_active:
-                self.game_loop(events)
-            else:
+            if not self.game_active:
                 self.start_screen_loop(events)
+            elif self.next_level_transition:
+                self.next_level_transition_loop()
+            elif self.game_active:
+                self.game_loop(events)
             pygame.display.flip()
             self.fpsClock.tick(self.fps)
 
@@ -549,6 +563,10 @@ class RelativityWars:
                     black_hole.enlarge()
             elif event.type == self.POWERUPSPAWN:
                 self.powerup_group.add(Powerup('shield', self.black_hole_group, self.screen_shape, self.sound_effects))
+            elif event.type == self.NEXTLEVEL:
+                self.next_level_transition_start_time = time.time()
+                self.next_level_transition = True
+                self.get_level(self.level + 1)
     
         fighter_collisions = pygame.sprite.spritecollide(self.fighter, self.enemy_torpedo_group, True)
         if fighter_collisions:
@@ -607,8 +625,9 @@ class RelativityWars:
                     pygame.quit()
                     sys.exit()
                 elif self.is_mouse_over_button('play'):
+                    self.next_level_transition = True
+                    self.next_level_transition_start_time = time.time()
                     self.game_active = True
-                    self.setup_game()
                 elif self.is_mouse_over_button('music'):
                     if pygame.mixer.music.get_busy():
                         pygame.mixer.music.stop()
@@ -638,5 +657,25 @@ class RelativityWars:
 
         self.crosshair.draw(self.screen)
 
+    def next_level_transition_loop(self):
+        if self.next_level_transition_start_time > time.time() - 1.5:
+            self.screen.fill((0, 0, 0))
+            self.stars.draw(self.screen)
+            dims = tuple(int(self.next_level_image_scale * d) for d in (350, 172))
+            try:
+                image = self.next_level_images[self.level - 1]
+            except IndexError:
+                image = self.next_level_images[-1]
+            image = pygame.transform.scale(image, dims)
+            rect = image.get_rect(center=self.screen_center)
+            self.screen.blit(image, rect)
+
+            if self.next_level_image_scale <= 1:
+                self.next_level_image_scale += 0.1
+        else:
+            self.next_level_transition = False
+            self.next_level_transition_start_time = 0
+            self.next_level_image_scale = 0.1
+            self.setup_game()
 
 RelativityWars().play()
