@@ -51,7 +51,19 @@ class RWSprite(pygame.sprite.Sprite):
 
     @staticmethod
     def get_angle_from_vector(vector):
-        return math.atan(vector[1] / vector[0]) if vector[0] != 0 else math.pi / 2
+        if vector[0] != 0:
+            angle = math.atan(vector[1] / vector[0])
+        elif vector[1] > 0:
+            angle = -math.pi / 2
+        else:
+            angle = math.pi / 2
+        if vector[0] < 0:
+            angle += math.pi
+        return -angle
+
+    @staticmethod
+    def get_unit_vector_from_angle(angle):
+        return np.array([math.cos(angle), math.sin(angle)])
 
     def center_to_pos(self):
         self.rect.center = [int(p) for p in self.pos]
@@ -65,6 +77,20 @@ class RWSprite(pygame.sprite.Sprite):
             self.pos = (self.game.screen_shape[0] - self.pos[0], self.game.screen_shape[1])
         elif self.pos[1] > self.game.screen_shape[1]:
             self.pos = (self.game.screen_shape[0] - self.pos[0], 0)
+
+    def limit_pos_to_screen(self):
+        new_pos = self.pos + self.velocity
+        for i in range(2):
+            if new_pos[i] < 0:
+                new_pos[i] = 0
+                if self.velocity[i] <= 0:
+                    self.velocity[i] = 0
+                self.velocity[i] = 0
+            elif new_pos[i] > self.game.screen_shape[i]:
+                new_pos[i] = self.game.screen_shape[i]
+                if self.velocity[i] >= 0:
+                    self.velocity[i] = 0
+        self.pos = new_pos
 
     def kill_if_offscreen(self):
         if not 0 <= self.rect.center[0] <= self.game.screen_shape[0] or not 0 <= self.rect.center[1] <= self.game.screen_shape[1]:
@@ -253,18 +279,7 @@ class Fighter(RWSprite):
             self.direction = 'left'
 
     def move(self):
-        new_pos = self.pos + self.velocity
-        for i in range(2):
-            if new_pos[i] < 0:
-                new_pos[i] = 0
-                if self.velocity[i] <= 0:
-                    self.velocity[i] = 0
-                self.velocity[i] = 0
-            elif new_pos[i] > self.game.screen_shape[i]:
-                new_pos[i] = self.game.screen_shape[i]
-                if self.velocity[i] >= 0:
-                    self.velocity[i] = 0
-        self.pos = new_pos
+        self.limit_pos_to_screen()
         self.center_to_pos()
 
     def accelerate(self):
@@ -435,33 +450,41 @@ class EnemyFighter(DroneBase):
     sound_death = pygame.mixer.Sound('assets/fighter-death.wav')
     speed = 1
     acceleration = 1
+    direction = 0
+    drag = 0.05
 
     def __init__(self, game):
         super().__init__(game)
 
-    def accelerate(self):
-        gravity = self.calculate_gravity()
-        rel_pos = self.pos - self.game.fighter.pos
+    def set_direction(self, gravity):
         unit_gravity = gravity / self.hypotenuse(gravity)
-        unit_rel_pos = rel_pos / self.hypotenuse(rel_pos)
-        acc = rel_pos, - gravity
-        unit_acc = acc / self.hypotenuse(acc)
-        unit_acc = unit_rel_pos
-        self.velocity = [self.acceleration * a + v for a,v in zip(unit_acc, self.velocity)]
-        # print(gravity, unit_acc, self.pos, self.velocity)
-
-    def _(self):
-        gravity = self.calculate_gravity()
-        unit_gravity = [g / math.sqrt(gravity[0]**2 + gravity[1]**2) for g in gravity]
         velocity_max_escape = self.velocity + gravity - unit_gravity * self.acceleration
+        angle_gravity = self.get_angle_from_vector(gravity)
+        speed_max_escape = math.cos(angle_gravity) * self.hypotenuse(velocity_max_escape)
+        magnitude_gravity = self.hypotenuse(gravity)
+        if speed_max_escape < magnitude_gravity:
+            # fly into black hole
+            self.direction = angle_gravity
+        elif speed_max_escape > 2 * magnitude_gravity:
+            # fly to fighter
+            rel_pos = self.game.fighter.pos - self.pos
+            self.direction = self.get_angle_from_vector(rel_pos)
+        else:
+            # fly away from black hole
+            self.direction = angle_gravity + math.pi        
 
     def update(self):
-        self.accelerate()
-        self.pos = self.pos + self.velocity
-        self.wrap_pos()
-        self.center_to_pos()
+        gravity = self.calculate_gravity()
+        self.set_direction(gravity)
+        # self.velocity += gravity + self.get_unit_vector_from_angle(self.direction) * self.acceleration
+        self.velocity += gravity * (1 - self.drag)
+
+        self.pos += self.velocity
+        self.limit_pos_to_screen()
         angle = self.get_angle_from_vector(self.velocity)
-        self.image = pygame.transform.rotate(self.raw_image.copy(), angle)
+        self.image = pygame.transform.rotate(self.raw_image.copy(), math.degrees(angle))
+        self.image.get_rect()
+        self.center_to_pos()
 
 
 class Drone(DroneBase):
@@ -675,6 +698,7 @@ class RelativityWars:
         self.powerup_group.empty()
         self.drone_group.empty()
         self.enemy_torpedo_group.empty()
+        self.enemy_fighter_group.empty()
         
         # black hole generation
         rand = np.array([random.random() + 1 for _ in range(self.game_params.black_holes)])
@@ -696,7 +720,7 @@ class RelativityWars:
         self.fighter.zerog_torpedos = False
         self.fighter.zerog_fired = 0
 
-        # self.enemy_fighter_group.add(EnemyFighter(self))
+        self.enemy_fighter_group.add(EnemyFighter(self))
 
     def game_over(self):
         self.high_score = max([self.score, self.high_score])
