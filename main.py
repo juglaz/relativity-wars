@@ -32,16 +32,16 @@ class RWSprite(pygame.sprite.Sprite):
     GRAVITATIONAL_CONSTANT = 180
     MAX_GRAVITY = 20
 
-    def __init__(self, black_hole_group):
+    def __init__(self, pos, velocity, game):
         super().__init__()
-        self.black_hole_group = black_hole_group
+        self.game = game
+        self.pos = pos
 
     def calculate_gravity(self):
-        pos = self.rect.center
         vector = np.array([0., 0.])
-        for black_hole in self.black_hole_group:
-            relative_pos = tuple(a - b for a,b in zip(pos, black_hole.rect.center))
-            angle = math.atan(relative_pos[1] / relative_pos[0]) if relative_pos[0] != 0 else math.pi / 2
+        for black_hole in self.game.black_hole_group:
+            relative_pos = self.pos - black_hole.pos
+            angle = self.get_angle_from_vector(relative_pos)
             distance = math.sqrt(relative_pos[0]**2 + relative_pos[1]**2)
             vector += np.array([-self.GRAVITATIONAL_CONSTANT / math.copysign(distance**1.1, rel) if distance != 0 else 0 for rel in relative_pos])
         net_gravity = math.sqrt(vector[0]**2 + vector[1]**2)
@@ -49,66 +49,92 @@ class RWSprite(pygame.sprite.Sprite):
             vector *= self.MAX_GRAVITY / net_gravity
         return vector
 
+    @staticmethod
+    def get_angle_from_vector(vector):
+        return math.atan(vector[1] / vector[0]) if vector[0] != 0 else math.pi / 2
+
+    def center_to_pos(self):
+        self.rect.center = [int(p) for p in self.pos]
+
+    def wrap_pos(self):
+        if self.pos[0] < 0:
+            self.pos = (self.game.screen_shape[0], self.game.screen_shape[1] - self.pos[1])
+        elif self.pos[0] > self.game.screen_shape[0]:
+            self.pos = (0, self.game.screen_shape[1] - self.pos[1])
+        if self.pos[1] < 0:
+            self.pos = (self.game.screen_shape[0] - self.pos[0], self.game.screen_shape[1])
+        elif self.pos[1] > self.game.screen_shape[1]:
+            self.pos = (self.game.screen_shape[0] - self.pos[0], 0)
+
+    def kill_if_offscreen(self):
+        if not 0 <= self.rect.center[0] <= self.game.screen_shape[0] or not 0 <= self.rect.center[1] <= self.game.screen_shape[1]:
+            self.kill()
+
+    def kill_if_in_black_hole(self):
+        if pygame.sprite.spritecollide(self, self.game.black_hole_group, False):
+            self.kill()
     
+    @staticmethod
+    def hypotenuse(vector):
+        return math.sqrt(vector[0]**2 + vector[1]**2)
+
+
 class DroneBase(RWSprite):
     torpedo_sound = pygame.mixer.Sound('assets/torpedo.wav')
     speed = 3
     drag = 0.1
     death_time = None
 
-    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects):
-        super().__init__(black_hole_group)
-        self.enemy_torpedo_group = enemy_torpedo_group
-        self.screen_shape = screen_shape
-        self.sound_effects = sound_effects
+    def __init__(self, game):
+        self.game = game
         self.random_init()
+        super().__init__(self.pos, self.velocity, game)
         self.init_time = time.time()
         self.last_fired_time = self.init_time
 
     def random_init(self):
         if random.choice([True, False]):
-            self.pos = (random.choice([0, self.screen_shape[0]]), random.randrange(0, self.screen_shape[1]))
-            self.velocity = (self.speed * (1 if self.pos[0] == 0 else -1), random.choice([-3, 3]))
+            self.pos = np.array([random.choice([0, self.game.screen_shape[0]]), random.randrange(0, self.game.screen_shape[1])], dtype='float64')
+            self.velocity = np.array([self.speed * (1 if self.pos[0] == 0 else -1), random.choice([-3, 3])], dtype='float64')
         else:
-            self.pos = (random.randrange(0, self.screen_shape[0]), random.choice([0, screen_shape[1]]))
-            self.velocity = (random.choice([-3, 3]), self.speed * (1 if self.pos[1] == 0 else -1))
-        self.rect = self.image.get_rect(center=self.pos)
+            self.pos = np.array([random.randrange(0, self.game.screen_shape[0]), random.choice([0, screen_shape[1]])], dtype='float64')
+            self.velocity = np.array([random.choice([-3, 3]), self.speed * (1 if self.pos[1] == 0 else -1)], dtype='float64')
+        self.rect = self.image.get_rect()
+        self.center_to_pos()
     
     def update(self):
         self.accelerate()
-        self.pos = [a + b for a,b in zip(self.pos, self.velocity)]
-        self.rect.center = [int(p) for p in self.pos]
-        if not 0 <= self.rect.center[0] <= self.screen_shape[0] or not 0 <= self.rect.center[1] <= self.screen_shape[1]:
-            self.kill()
-        elif pygame.sprite.spritecollide(self, self.black_hole_group, False):
-            self.kill()
+        self.pos += self.velocity
+        self.center_to_pos()
+        self.kill_if_offscreen()
+        self.kill_if_in_black_hole()
 
     def accelerate(self):
         gravity = self.calculate_gravity()
-        self.velocity = [(a + b) * (1 - self.drag) for a,b in zip(self.velocity, gravity)]
+        self.velocity = (self.velocity + gravity) * (1 - self.drag)
 
     def destroy(self, angle):
         if self.death_time is None:
             self.image = pygame.transform.rotate(self.image_death.copy(), angle)
-            if self.sound_effects:
+            if self.game.sound_effects:
                 self.sound_death.play()
             self.death_time = time.time()
 
 
-class BlackHole(pygame.sprite.Sprite):
+class BlackHole(RWSprite):
     raw_image = pygame.image.load('assets/black_hole.png').convert()
     speed = 0.5
 
-    def __init__(self, pos, screen_shape, size=None):
-        super().__init__()
-        self.screen_shape = screen_shape
+    def __init__(self, pos, game, size=None):
+        self.direction = random.randrange(0, 7)
+        self.pos = pos
+        super().__init__(self.pos, self.velocity, game)
         self.image = self.raw_image.copy()
         self.size = size
         if size is not None:
             self.image = pygame.transform.scale(self.image, (size, size))
-        self.pos = pos
-        self.rect = self.image.get_rect(center=pos)
-        self.direction = random.randrange(0, 7)
+        self.rect = self.image.get_rect()
+        self.center_to_pos()
         self.path_radius, self.path_arc = self.random_arc()
         self.arc_traversed = 0
 
@@ -118,26 +144,16 @@ class BlackHole(pygame.sprite.Sprite):
 
     @property
     def velocity(self):
-        return (math.cos(self.direction) * self.speed, math.sin(self.direction) * self.speed)
+        return np.array([math.cos(self.direction) * self.speed, math.sin(self.direction) * self.speed])
 
     def update(self):
         self.direction = self.next_direction()
-        c = self.pos
-        v = self.velocity
-        new_center = [a + b for a,b in zip(c, v)]
-        if new_center[0] < 0:
-            new_center[0] = self.screen_shape[0]
-        elif new_center[0] > self.screen_shape[0]:
-            new_center[0] = 0
-        if new_center[1] < 0:
-            new_center[1] = self.screen_shape[1]
-        elif new_center[1] > self.screen_shape[1]:
-            new_center[1] = 0
-        self.pos = [int(p) for p in new_center]
-        self.rect.center = new_center
+        self.pos = self.pos + self.velocity
+        self.wrap_pos()
+        self.center_to_pos()
 
     def random_arc(self):
-        path_radius = random.randint(50, self.screen_shape[1] / 2)
+        path_radius = random.randint(50, self.game.screen_shape[1] / 2)
         path_arc = random.randrange(1, 7) * random.choice([-1, 1]) * path_radius
         return path_radius, path_arc
 
@@ -194,22 +210,17 @@ class Fighter(RWSprite):
     zerog_clipsize = 20
     zerog_fired = 0
 
-    def __init__(self, screen_shape, black_hole_group, torpedo_group, sound_effects, crosshair, pos=None):
-        super().__init__(black_hole_group)
-        self.crosshair = crosshair
-        self.torpedo_group = torpedo_group
-        self.screen_shape = screen_shape
-        self.sound_effects = sound_effects
-        if pos is None:
-            self.initial_pos = (100, 100)
-        else:
-            self.initial_pos = pos
-        self.velocity = [0, 0]  # speed x, speed y
-        self.direction = 'right'  # degrees
-        self.acceleration = 1
+    initial_pos = np.array([100, 100])
+    pos = initial_pos
+    drag = 0.05
+    velocity = np.array([0., 0.])  # speed x, speed y
+    direction = 'right'  # degrees
+    acceleration = 1
+    image = directions[direction]['image']
+    rect = image.get_rect(center=initial_pos)
 
-        self.image = self.directions[self.direction]['image']
-        self.rect = self.image.get_rect(center=self.initial_pos)
+    def __init__(self, game):
+        super().__init__(self.pos, self.velocity, game)
 
     @property
     def boost_available(self):
@@ -219,7 +230,7 @@ class Fighter(RWSprite):
         if self.boost_available:
             self.boost_active = True
             self.boost_last_used = time.time()
-            if self.sound_effects:
+            if self.game.sound_effects:
                 self.boost_sound.play()
 
     def update_direction(self):
@@ -240,23 +251,23 @@ class Fighter(RWSprite):
             self.direction = 'down'
         elif keys[pygame.K_a]:
             self.direction = 'left'
-        
+
     def move(self):
-        new_center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
+        new_pos = self.pos + self.velocity
         for i in range(2):
-            if new_center[i] < 0:
-                new_center[i] = 0
+            if new_pos[i] < 0:
+                new_pos[i] = 0
                 if self.velocity[i] <= 0:
                     self.velocity[i] = 0
                 self.velocity[i] = 0
-            elif new_center[i] > self.screen_shape[i]:
-                new_center[i] = self.screen_shape[i]
+            elif new_pos[i] > self.game.screen_shape[i]:
+                new_pos[i] = self.game.screen_shape[i]
                 if self.velocity[i] >= 0:
                     self.velocity[i] = 0
-        self.rect.center = tuple(new_center)
+        self.pos = new_pos
+        self.center_to_pos()
 
     def accelerate(self):
-        DRAG = 0.05
         gravity = self.calculate_gravity()
         accel = self.boost_acceleration if self.boost_active else self.acceleration
         if self.death_time is None:
@@ -265,20 +276,19 @@ class Fighter(RWSprite):
                 angle = self.directions[self.direction]['angle']
                 self.velocity = [math.cos(angle) * accel + self.velocity[0],
                                 math.sin(angle) * accel + self.velocity[1]]
-        self.velocity = [a + b for a,b in zip(self.velocity, gravity)]
-        self.velocity = [v * (1 - DRAG) for v in self.velocity]
+        self.velocity = (self.velocity + gravity) * (1 - self.drag)
 
     def get_powerup(self, powerup):
         if powerup.power == 'shield' and self.shields == False:
             self.shields = True
-            if self.sound_effects:
+            if self.game.sound_effects:
                 self.shield_up_sound.play()
         if powerup.power == 'zerog_torpedo':
             self.zerog_torpedos = True
             self.zerog_fired = 0
-            if self.sound_effects:
+            if self.game.sound_effects:
                 self.shield_up_sound.play()
-            self.crosshair.set_skin('zerog')
+            self.game.crosshair.set_skin('zerog')
         powerup.kill()
 
     def update(self):
@@ -334,21 +344,21 @@ class Fighter(RWSprite):
                 self.zerog_fired += 1
                 if self.zerog_fired >= self.zerog_clipsize:
                     self.zerog_torpedos = False
-                    self.crosshair.set_skin(None)
+                    self.game.crosshair.set_skin(None)
             else:
                 skin = None
-            self.torpedo_group.add(Torpedo((init_x, init_y), angle, self.screen_shape, self.black_hole_group, skin=skin))
-            if self.sound_effects:
+            self.game.torpedo_group.add(Torpedo((init_x, init_y), angle, self.game, skin=skin))
+            if self.game.sound_effects:
                 self.torpedo_sound.play()
 
     def destroy(self, angle):
         if self.shields == True:
             self.shields = False
-            if self.sound_effects:
+            if self.game.sound_effects:
                 self.shield_down_sound.play()
         elif self.death_time is None:
             self.image = pygame.transform.rotate(self.death_image.copy(), angle)
-            if self.sound_effects:
+            if self.game.sound_effects:
                 self.death_sound.play()
             self.death_time = time.time()
 
@@ -381,8 +391,7 @@ class Torpedo(RWSprite):
     skin_names = ('zerog', )
     skins = {skin: pygame.image.load(f'assets/torpedo_{skin}.png').convert_alpha() for skin in skin_names}
 
-    def __init__(self, pos, angle, screen_shape, black_hole_group, speed=20, skin=None):
-        super().__init__(black_hole_group)
+    def __init__(self, pos, angle, game, speed=20, skin=None):
         self.skin = skin
         if skin is not None:
             self.raw_image = self.skins.get(skin).copy()
@@ -391,14 +400,16 @@ class Torpedo(RWSprite):
         self.image = self.raw_image.copy()
         
         self.speed = speed
-        self.angle = angle
+        self.pos = pos
         velocity_x = math.cos(math.radians(angle)) * self.speed
         velocity_y = -math.sin(math.radians(angle)) * self.speed
         self.velocity = np.array([velocity_x, velocity_y])
+        
+        super().__init__(self.pos, self.velocity, game)
+        self.angle = angle
         self.image = pygame.transform.rotate(self.image, self.angle)
-        self.rect = self.image.get_rect(center=pos)
-        self.screen_shape =  screen_shape
-        self.black_hole_group = black_hole_group
+        self.rect = self.image.get_rect()
+        self.center_to_pos()
 
     def update(self):
         init_angle = self.angle
@@ -406,19 +417,15 @@ class Torpedo(RWSprite):
             gravity = (0, 0)
         else:
             gravity = self.calculate_gravity()
-        self.velocity = [a + b for a,b in zip(self.velocity, gravity)]
-        self.rect.center = [math.ceil(a + b) for a,b in zip(self.rect.center, self.velocity)]
+        self.velocity = self.velocity + gravity
+        self.pos += self.velocity
+        self.center_to_pos()
         self.angle = math.degrees(math.atan(-self.velocity[1] / self.velocity[0])) if self.velocity[0] != 0 else 90
         if self.velocity[0] < 0:
             self.angle += 180
         self.image = pygame.transform.rotate(self.raw_image.copy(), self.angle)
-        if not 0 < self.rect.center[0] < self.screen_shape[0] or not 0 < self.rect.center[1] < self.screen_shape[1]:
-            self.kill()
-        elif pygame.sprite.spritecollide(self, self.black_hole_group, False):
-            self.kill()
-    
-    def draw(self, screen):
-        screen.blit(self.image, self.rect)
+        self.kill_if_offscreen()
+        self.kill_if_in_black_hole()
 
 
 class EnemyFighter(DroneBase):
@@ -426,19 +433,35 @@ class EnemyFighter(DroneBase):
     image = raw_image.copy()
     image_death = pygame.image.load('assets/fighter-death.png')
     sound_death = pygame.mixer.Sound('assets/fighter-death.wav')
-    speed = 8
+    speed = 1
+    acceleration = 1
 
-    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects, fighter):
-        super().__init__(screen_shape, black_hole_group, enemy_torpedo_group, sound_effects)
-        self.fighter = fighter
-
-    def update(self):
-        super().update()
+    def __init__(self, game):
+        super().__init__(game)
 
     def accelerate(self):
         gravity = self.calculate_gravity()
-        rel_pos = [e - f for e,f in zip(self.pos, self.fighter.pos)]
-        self.direction = 1
+        rel_pos = self.pos - self.game.fighter.pos
+        unit_gravity = gravity / self.hypotenuse(gravity)
+        unit_rel_pos = rel_pos / self.hypotenuse(rel_pos)
+        acc = rel_pos, - gravity
+        unit_acc = acc / self.hypotenuse(acc)
+        unit_acc = unit_rel_pos
+        self.velocity = [self.acceleration * a + v for a,v in zip(unit_acc, self.velocity)]
+        # print(gravity, unit_acc, self.pos, self.velocity)
+
+    def _(self):
+        gravity = self.calculate_gravity()
+        unit_gravity = [g / math.sqrt(gravity[0]**2 + gravity[1]**2) for g in gravity]
+        velocity_max_escape = self.velocity + gravity - unit_gravity * self.acceleration
+
+    def update(self):
+        self.accelerate()
+        self.pos = self.pos + self.velocity
+        self.wrap_pos()
+        self.center_to_pos()
+        angle = self.get_angle_from_vector(self.velocity)
+        self.image = pygame.transform.rotate(self.raw_image.copy(), angle)
 
 
 class Drone(DroneBase):
@@ -447,8 +470,8 @@ class Drone(DroneBase):
     image_death = pygame.image.load('assets/drone-death.png').convert_alpha()
     speed = 8
 
-    def __init__(self, screen_shape, black_hole_group, enemy_torpedo_group, sound_effects):
-        super().__init__(screen_shape, black_hole_group, enemy_torpedo_group, sound_effects)
+    def __init__(self, game):
+        super().__init__(game)
 
     def update(self):
         super().update()
@@ -456,8 +479,8 @@ class Drone(DroneBase):
             self.kill()
         elif time.time() > self.last_fired_time + 1.5 and self.death_time is None:
             for angle in np.arange(0, 7) * 45:
-                self.enemy_torpedo_group.add(Torpedo(self.rect.center, angle, self.screen_shape, self.black_hole_group, speed=10))
-            if self.sound_effects:
+                self.game.enemy_torpedo_group.add(Torpedo(self.rect.center, angle, self.game, speed=10))
+            if self.game.sound_effects:
                 self.torpedo_sound.play()
             self.last_fired_time = time.time()
         elif self.death_time:
@@ -472,9 +495,9 @@ class Powerup(DroneBase):
     }
     speed = 6
 
-    def __init__(self, power, black_hole_group, screen_shape, sound_effects):
+    def __init__(self, power, game):
         self.image = self.images.get(power)
-        super().__init__(screen_shape, black_hole_group, None, sound_effects)
+        super().__init__(game)
         self.power = power
         self.random_init()
 
@@ -492,6 +515,7 @@ class Star:
 
     def draw(self, screen):
         posint = tuple(map(int, self.pos))
+        # print(self.pos, posint)
         pygame.draw.circle(screen, self.color, posint, self.radius)
 
 
@@ -500,7 +524,7 @@ class Stars:
     star_options = tuple(zip((1, 1, 2, 2, 3), (colors)))
     weights = (60, 30, 15, 7, 3)
     num_stars = 500
-    velocity = (-.2, .1)
+    velocity = np.array([-.2, .1])
 
     def __init__(self, screen_shape):
         self.screen_shape = screen_shape
@@ -511,7 +535,7 @@ class Stars:
         for i in reversed(range(len(self.stars))):
             star = self.stars[i]
             # offset stars
-            star.pos = tuple(p + v for p,v in zip(star.pos, self.velocity))
+            star.pos += self.velocity
             # delete stars off-screen
             if not (0 < star.pos[0] < self.screen_shape[0] and 0 < star.pos[1] < self.screen_shape[1]):
                 del self.stars[i]
@@ -527,15 +551,15 @@ class Stars:
 
         for (radius, color), axis in zip(star_params, axes):
             if axis == 'x':
-                pos = (
-                    random.randint(0, self.screen_shape[0]),
+                pos = np.array([
+                    random.random() * self.screen_shape[0],
                     0 if self.velocity[1] > 0 else self.screen_shape[1]
-                )
+                ])
             else:
-                pos = (
+                pos = np.array([
                     0 if self.velocity[0] > 0 else self.screen_shape[0],
-                    random.randint(0, self.screen_shape[1])
-                )
+                    random.random() * self.screen_shape[1]
+                ])
             self.stars.append(Star(pos, color, radius))
 
     def draw(self, screen):
@@ -556,6 +580,7 @@ class GameParams:
     dronespawn_freq = 2000
     dronespawn_freq_ramp = 15
     black_holes = 2
+    black_hole_total_size = 350
     powerupspawn_freq = 10000
     nextlevel_freq = 1 * 60 * 1000
     
@@ -585,6 +610,8 @@ class RelativityWars:
     game_over_20plus = pygame.mixer.Sound('assets/game-over-20plus.wav')
     game_over_50plus = pygame.mixer.Sound('assets/game-over-50plus.wav')
 
+    checkmark = pygame.image.load('assets/checkmark.png')
+
     start_screen = pygame.image.load('assets/start-screen.png').convert()
     next_level_images = [pygame.image.load(f'assets/next_level_{i + 1}.png').convert_alpha() for i in range(3)]
     boost_bar_layers =  [pygame.image.load('assets/boost-bar-background.png').convert_alpha(),
@@ -594,6 +621,7 @@ class RelativityWars:
     torpedo_group = pygame.sprite.Group()
     enemy_torpedo_group = pygame.sprite.Group()
     powerup_group = pygame.sprite.Group()
+    enemy_fighter_group = pygame.sprite.Group()
 
     pygame.mouse.set_visible(False)
     crosshair = Crosshair()
@@ -627,7 +655,7 @@ class RelativityWars:
         if isinstance(fighter, Fighter):
             self.fighter = fighter
         else:
-            self.fighter = Fighter(self.screen_shape, self.black_hole_group, self.torpedo_group, self.sound_effects, self.crosshair)
+            self.fighter = Fighter(self)
 
     def get_level(self, level):
         self.level = level
@@ -646,11 +674,17 @@ class RelativityWars:
         self.enemy_torpedo_group.empty()
         self.powerup_group.empty()
         self.drone_group.empty()
-        for _ in range(self.game_params.black_holes):
-            pos = (random.randrange(200, self.screen_shape[0] - 200), random.randrange(200, self.screen_shape[1] - 200))
-            size = random.randrange(50, 200)
-            black_hole = BlackHole(pos, self.screen_shape, size=size)
+        self.enemy_torpedo_group.empty()
+        
+        # black hole generation
+        rand = np.array([random.random() + 1 for _ in range(self.game_params.black_holes)])
+        sizes = self.game_params.black_hole_total_size / sum(rand) * rand
+        sizes = [int(s) for s in sizes]
+        for i in range(self.game_params.black_holes):
+            pos = np.array([random.randrange(200, self.screen_shape[0] - 200), random.randrange(200, self.screen_shape[1] - 200)])
+            black_hole = BlackHole(pos, self, size=sizes[i])
             self.black_hole_group.add(black_hole)
+
         pygame.time.set_timer(self.DRONESPAWN, self.dronespawn_freq)
         pygame.time.set_timer(self.INCREASEDRONESPAWN, 3000)
         pygame.time.set_timer(self.POWERUPSPAWN, self.powerupspawn_freq)
@@ -661,6 +695,8 @@ class RelativityWars:
         self.fighter.shields = False
         self.fighter.zerog_torpedos = False
         self.fighter.zerog_fired = 0
+
+        # self.enemy_fighter_group.add(EnemyFighter(self))
 
     def game_over(self):
         self.high_score = max([self.score, self.high_score])
@@ -709,7 +745,6 @@ class RelativityWars:
                 else:
                     self.screen.blit(Torpedo.raw_image, (x - (i - 10) * 30, y - 15))
 
-
     def is_mouse_over_button(self, button):
         button_coords = {'play': ((98, 281), (230, 341)),
                         'quit': ((12, 380), (91, 402)),
@@ -721,7 +756,7 @@ class RelativityWars:
         return area[0][0] < pos[0] < area[1][0] and area[0][1] < pos[1] < area[1][1]
 
     def play(self):
-        pygame.mixer.music.play()
+        # pygame.mixer.music.play()
         self.setup_game()
 
         while True:
@@ -766,7 +801,7 @@ class RelativityWars:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 self.fighter.fire()
             elif event.type == self.DRONESPAWN:
-                self.drone_group.add(Drone(self.screen_shape, self.black_hole_group, self.enemy_torpedo_group, sound_effects=self.sound_effects))
+                self.drone_group.add(Drone(self))
             elif event.type == self.INCREASEDRONESPAWN:
                 self.dronespawn_freq = max([0, self.dronespawn_freq - self.game_params.dronespawn_freq_ramp])
                 pygame.time.set_timer(self.DRONESPAWN, self.dronespawn_freq)
@@ -774,7 +809,7 @@ class RelativityWars:
                     black_hole.enlarge()
             elif event.type == self.POWERUPSPAWN:
                 power = random.choice(['shield', 'zerog_torpedo'])
-                self.powerup_group.add(Powerup(power, self.black_hole_group, self.screen_shape, self.sound_effects))
+                self.powerup_group.add(Powerup(power, self))
             elif event.type == self.NEXTLEVEL:
                 self.next_level_transition_start_time = time.time()
                 self.next_level_transition = True
@@ -821,6 +856,7 @@ class RelativityWars:
         self.drone_group.update()
         self.powerup_group.update()
         self.stars.update()
+        self.enemy_fighter_group.update()
 
         # Draw
         self.screen.fill((0, 0, 0))
@@ -830,6 +866,7 @@ class RelativityWars:
         self.powerup_group.draw(self.screen)
         self.fighter.draw(self.screen)
         self.crosshair.draw(self.screen)
+        self.enemy_fighter_group.draw(self.screen)
         self.torpedo_group.draw(self.screen)
         self.enemy_torpedo_group.draw(self.screen)
         self.score_display()
@@ -871,6 +908,10 @@ class RelativityWars:
         high_score_value_render_rect = high_score_value_render.get_rect(center=tuple(x + y for x,y in zip(self.START_SCREEN_OFFSET, (175, 250))))
         self.screen.blit(high_score_value_render, high_score_value_render_rect)
 
+        if self.sound_effects:
+            self.screen.blit(self.checkmark, (self.START_SCREEN_OFFSET[0] + 256, self.START_SCREEN_OFFSET[1] + 375))
+        if pygame.mixer.music.get_busy():
+            self.screen.blit(self.checkmark, (self.START_SCREEN_OFFSET[0] + 148, self.START_SCREEN_OFFSET[1] + 375))
         self.crosshair.draw(self.screen)
 
     def next_level_transition_loop(self):
