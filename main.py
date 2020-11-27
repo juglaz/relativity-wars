@@ -63,7 +63,7 @@ class RWSprite(pygame.sprite.Sprite):
 
     @staticmethod
     def get_unit_vector_from_angle(angle):
-        return np.array([math.cos(angle), math.sin(angle)])
+        return np.array([math.cos(angle), -math.sin(angle)])
 
     def center_to_pos(self):
         self.rect.center = [int(p) for p in self.pos]
@@ -289,8 +289,8 @@ class Fighter(RWSprite):
             keys = pygame.key.get_pressed()
             if keys[pygame.K_w] or keys[pygame.K_a] or keys[pygame.K_s] or keys[pygame.K_d]:
                 angle = self.directions[self.direction]['angle']
-                self.velocity = [math.cos(angle) * accel + self.velocity[0],
-                                math.sin(angle) * accel + self.velocity[1]]
+                self.velocity = np.array([math.cos(angle) * accel + self.velocity[0],
+                                math.sin(angle) * accel + self.velocity[1]])
         self.velocity = (self.velocity + gravity) * (1 - self.drag)
 
     def get_powerup(self, powerup):
@@ -449,9 +449,14 @@ class EnemyFighter(DroneBase):
     image_death = pygame.image.load('assets/fighter-death.png')
     sound_death = pygame.mixer.Sound('assets/fighter-death.wav')
     speed = 1
-    acceleration = 1
+    max_acceleration = 1
+    acceleration = max_acceleration
     direction = 0
-    drag = 0.05
+    drag = 0.1
+
+    # logic vars
+    proximity_dist = 700  # fighter will start to slow down when within this distance from other fighter
+    hold_dist = 400  # fighter will stop accelerating when within this distance from other fighter
 
     def __init__(self, game):
         super().__init__(game)
@@ -460,29 +465,38 @@ class EnemyFighter(DroneBase):
         unit_gravity = gravity / self.hypotenuse(gravity)
         velocity_max_escape = self.velocity + gravity - unit_gravity * self.acceleration
         angle_gravity = self.get_angle_from_vector(gravity)
-        speed_max_escape = math.cos(angle_gravity) * self.hypotenuse(velocity_max_escape)
+        theta = angle_gravity + math.pi
+        speed_max_escape = np.absolute(velocity_max_escape * np.array([math.cos(theta), math.sin(theta)])).sum()
         magnitude_gravity = self.hypotenuse(gravity)
+        self.acceleration = self.max_acceleration
+        dist_from_fighter = self.hypotenuse(self.pos - self.game.fighter.pos)
         if speed_max_escape < magnitude_gravity:
             # fly into black hole
             self.direction = angle_gravity
-        elif speed_max_escape > 2 * magnitude_gravity:
+        elif speed_max_escape < magnitude_gravity * 3:
+            # fly away from black hole
+            self.direction = angle_gravity + math.pi
+        elif dist_from_fighter < self.hold_dist:
+            # hold position
+            self.acceleration = 0
+        elif dist_from_fighter < self.proximity_dist:
+            # slow down
+            self.acceleration = self.max_acceleration / (self.proximity_dist - self.hold_dist) * (dist_from_fighter - self.hold_dist)
+        else:
             # fly to fighter
             rel_pos = self.game.fighter.pos - self.pos
             self.direction = self.get_angle_from_vector(rel_pos)
-        else:
-            # fly away from black hole
-            self.direction = angle_gravity + math.pi        
 
     def update(self):
         gravity = self.calculate_gravity()
         self.set_direction(gravity)
-        # self.velocity += gravity + self.get_unit_vector_from_angle(self.direction) * self.acceleration
-        self.velocity += gravity * (1 - self.drag)
+        self.velocity = (self.velocity + gravity + self.get_unit_vector_from_angle(self.direction) * self.acceleration) * (1 - self.drag)
+        # self.velocity = (self.velocity + gravity) * (1 - self.drag)
 
         self.pos += self.velocity
         self.limit_pos_to_screen()
         angle = self.get_angle_from_vector(self.velocity)
-        self.image = pygame.transform.rotate(self.raw_image.copy(), math.degrees(angle))
+        self.image = pygame.transform.rotate(self.raw_image.copy(), math.degrees(self.direction))
         self.image.get_rect()
         self.center_to_pos()
 
