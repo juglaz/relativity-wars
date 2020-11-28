@@ -6,7 +6,6 @@ import random
 import time
 import json
 from screeninfo import get_monitors
-from scipy.stats import skewnorm
 
 
 pygame.mixer.init()
