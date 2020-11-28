@@ -344,16 +344,11 @@ class Fighter(RWSprite):
         self.death_time = None
         self.reset_time = time.time()
         self.reset_active = True
-    
+
     def fire(self):
         if self.death_time is None:
-            mouse_x, mouse_y = pygame.mouse.get_pos()
-            init_x, init_y = self.rect.center
-            delta_x = mouse_x - init_x
-            delta_y = init_y - mouse_y
-            angle = math.degrees(math.atan(delta_y / delta_x)) if delta_x != 0 else 0
-            if delta_x < 0:
-                angle += 180
+            rel_pos = np.array(pygame.mouse.get_pos()) - self.pos
+            angle = self.get_angle_from_vector(rel_pos)
             if self.zerog_torpedos:
                 skin = 'zerog'
                 self.zerog_fired += 1
@@ -362,7 +357,7 @@ class Fighter(RWSprite):
                     self.game.crosshair.set_skin(None)
             else:
                 skin = None
-            self.game.torpedo_group.add(Torpedo((init_x, init_y), angle, self.game, skin=skin))
+            self.game.torpedo_group.add(Torpedo(self.pos, angle, self.game, skin=skin))
             if self.game.sound_effects:
                 self.torpedo_sound.play()
 
@@ -416,29 +411,24 @@ class Torpedo(RWSprite):
         
         self.speed = speed
         self.pos = pos
-        velocity_x = math.cos(math.radians(angle)) * self.speed
-        velocity_y = -math.sin(math.radians(angle)) * self.speed
-        self.velocity = np.array([velocity_x, velocity_y])
+        self.velocity = self.get_unit_vector_from_angle(angle) * self.speed
         
         super().__init__(self.pos, self.velocity, game)
         self.angle = angle
-        self.image = pygame.transform.rotate(self.image, self.angle)
+        self.image = pygame.transform.rotate(self.image, math.degrees(self.angle))
         self.rect = self.image.get_rect()
         self.center_to_pos()
 
     def update(self):
-        init_angle = self.angle
         if self.skin == 'zerog':
-            gravity = (0, 0)
+            gravity = np.array([0., 0.])
         else:
             gravity = self.calculate_gravity()
-        self.velocity = self.velocity + gravity
+        self.velocity += gravity
         self.pos += self.velocity
         self.center_to_pos()
-        self.angle = math.degrees(math.atan(-self.velocity[1] / self.velocity[0])) if self.velocity[0] != 0 else 90
-        if self.velocity[0] < 0:
-            self.angle += 180
-        self.image = pygame.transform.rotate(self.raw_image.copy(), self.angle)
+        self.angle = self.get_angle_from_vector(self.velocity)
+        self.image = pygame.transform.rotate(self.raw_image.copy(), math.degrees(self.angle))
         self.kill_if_offscreen()
         self.kill_if_in_black_hole()
 
@@ -515,14 +505,17 @@ class Drone(DroneBase):
         if time.time() > self.init_time + 10:
             self.kill()
         elif time.time() > self.last_fired_time + 1.5 and self.death_time is None:
-            for angle in np.arange(0, 7) * 45:
-                self.game.enemy_torpedo_group.add(Torpedo(self.rect.center, angle, self.game, speed=10))
-            if self.game.sound_effects:
-                self.torpedo_sound.play()
-            self.last_fired_time = time.time()
+            self.fire()
         elif self.death_time:
             if time.time() > self.death_time + 0.5:
                 self.kill()
+
+    def fire(self):
+        for angle in np.arange(0, 7) * math.pi / 4:
+            self.game.enemy_torpedo_group.add(Torpedo(self.pos.copy(), angle, self.game, speed=10))
+        if self.game.sound_effects:
+            self.torpedo_sound.play()
+        self.last_fired_time = time.time()
 
 
 class Powerup(DroneBase):
