@@ -170,10 +170,10 @@ class BlackHole(RWSprite):
 
     @property
     def velocity(self):
-        return np.array([math.cos(self.direction) * self.speed, math.sin(self.direction) * self.speed])
+        return self.speed * np.array([math.cos(self.direction), math.sin(self.direction)])
 
     def update(self):
-        self.direction = self.next_direction()
+        self.next_direction()
         self.pos = self.pos + self.velocity
         self.wrap_pos()
         self.center_to_pos()
@@ -188,8 +188,7 @@ class BlackHole(RWSprite):
             self.path_radius, self.path_arc = self.random_arc()
             self.arc_traversed = 0
         self.arc_traversed += self.speed
-        next_dir = 1.0 * self.speed / np.copysign(self.path_radius,  self.path_arc) + self.direction
-        return next_dir
+        self.direction += 1.0 * self.speed / np.copysign(self.path_radius,  self.path_arc)
 
     def enlarge(self):
         if self.size <= 200:
@@ -339,8 +338,9 @@ class Fighter(RWSprite):
 
     def reset(self):
         self.direction = 'right'
-        self.velocity = [0, 0]
-        self.rect.center = self.initial_pos
+        self.velocity = np.array([0., 0.])
+        self.pos = self.initial_pos
+        self.center_to_pos()
         self.death_time = None
         self.reset_time = time.time()
         self.reset_active = True
@@ -444,6 +444,20 @@ class EnemyFighter(DroneBase):
     direction = 0
     drag = 0.1
 
+    last_fired_time = time.time()
+    fire_refresh = 3
+    volley_size = 3
+    intra_volley_wait = 0.2
+    volley_shots_fired = 0
+
+    death_image = pygame.image.load('assets/fighter-death.png')
+    death_sound = pygame.mixer.Sound('assets/fighter-death.wav')
+    # shot_taken_image = pygame.image.load('assets/enemy-fighter-shot-taken.png')
+    # shot_taken_sound = pygame.mixer.Sound('assets/shot_taken.wav')
+    death_time = None
+    shots_taken = 0
+    max_hp = 10
+
     # logic vars
     proximity_dist = 700  # fighter will start to slow down when within this distance from other fighter
     hold_dist = 400  # fighter will stop accelerating when within this distance from other fighter
@@ -460,10 +474,10 @@ class EnemyFighter(DroneBase):
         magnitude_gravity = self.hypotenuse(gravity)
         self.acceleration = self.max_acceleration
         dist_from_fighter = self.hypotenuse(self.pos - self.game.fighter.pos)
+        # if speed_max_escape < magnitude_gravity:
+        #     # fly into black hole
+        #     self.direction = angle_gravity
         if speed_max_escape < magnitude_gravity:
-            # fly into black hole
-            self.direction = angle_gravity
-        elif speed_max_escape < magnitude_gravity * 3:
             # fly away from black hole
             self.direction = angle_gravity + math.pi
         elif dist_from_fighter < self.hold_dist:
@@ -477,18 +491,58 @@ class EnemyFighter(DroneBase):
             rel_pos = self.game.fighter.pos - self.pos
             self.direction = self.get_angle_from_vector(rel_pos)
 
+    def calculate_gravity(self):
+        return super().calculate_gravity() * 0.7
+
     def update(self):
         gravity = self.calculate_gravity()
         self.set_direction(gravity)
-        self.velocity = (self.velocity + gravity + self.get_unit_vector_from_angle(self.direction) * self.acceleration) * (1 - self.drag)
-        # self.velocity = (self.velocity + gravity) * (1 - self.drag)
 
+        if self.death_time is None:
+            torpedo_collisions = pygame.sprite.spritecollide(self, self.game.torpedo_group, True)
+            if torpedo_collisions:
+                self.take_fire(torpedo_collisions[0].angle)
+            else:
+                self.image = pygame.transform.rotate(self.raw_image.copy(), math.degrees(self.direction))
+            self.image.get_rect()
+            self.fire_volley()
+
+            self.velocity += self.get_unit_vector_from_angle(self.direction) * self.acceleration
+        elif time.time() - self.death_time > 3:
+            self.kill()
+        self.velocity = (self.velocity + gravity) * (1 - self.drag)
         self.pos += self.velocity
-        self.limit_pos_to_screen()
-        angle = self.get_angle_from_vector(self.velocity)
-        self.image = pygame.transform.rotate(self.raw_image.copy(), math.degrees(self.direction))
-        self.image.get_rect()
         self.center_to_pos()
+        self.limit_pos_to_screen()
+
+    def fire_volley(self):
+        time_since_last_fire = time.time() - self.last_fired_time
+        dist_from_fighter = self.hypotenuse(self.pos - self.game.fighter.pos)
+        if dist_from_fighter < self.proximity_dist and time_since_last_fire > self.fire_refresh:
+            self.fire()
+            self.last_fired_time = time.time()
+            self.volley_shots_fired = 1
+        elif self.volley_shots_fired < self.volley_size and time_since_last_fire > self.intra_volley_wait * self.volley_shots_fired:
+            self.volley_shots_fired += 1
+            self.fire()
+
+    def fire(self):
+        angle = self.get_angle_from_vector(self.game.fighter.pos - self.pos)
+        self.game.enemy_torpedo_group.add(Torpedo(self.pos.copy(), angle, self.game))
+
+    def take_fire(self, angle):
+        if self.death_time is None:
+            self.shots_taken += 1
+            if self.shots_taken >= self.max_hp:
+                self.destroy(angle)
+            else:
+                # self.image = pygame.transform.rotate(self.shot_taken_image.copy(), math.degrees(self.direction))
+                pass
+
+    def destroy(self, angle):
+        self.death_time = time.time()
+        self.game.score += self.max_hp
+        self.image = pygame.transform.rotate(self.death_image.copy(), math.degrees(angle))
 
 
 class Drone(DroneBase):
@@ -613,6 +667,7 @@ class GameParams:
     black_hole_total_size = 350
     powerupspawn_freq = 10000
     nextlevel_freq = 1 * 60 * 1000
+    enemyfighterspawn_freq = 40 * 1000
     
     def __init__(self, level):
         self.level = level
@@ -620,6 +675,7 @@ class GameParams:
         self.powerupspawn_freq -= 1000 * (level - 1)
         self.dronespawn_freq = int(self.dronespawn_freq * 0.8**(level - 1))
         self.dronespawn_freq_ramp += 10 * (level - 1)
+        self.enemyfighterspawn_freq = int(self.enemyfighterspawn_freq * 0.8**(level - 1))
 
 
 class RelativityWars:
@@ -660,6 +716,7 @@ class RelativityWars:
     INCREASEDRONESPAWN = pygame.USEREVENT + 1
     POWERUPSPAWN = pygame.USEREVENT + 2
     NEXTLEVEL = pygame.USEREVENT + 3
+    ENEMYFIGHTERSPAWN = pygame.USEREVENT + 4
     next_level_transition = True
     next_level_image_scale = 0.1
     next_level_transition_start_time = 0
@@ -720,14 +777,13 @@ class RelativityWars:
         pygame.time.set_timer(self.INCREASEDRONESPAWN, 3000)
         pygame.time.set_timer(self.POWERUPSPAWN, self.powerupspawn_freq)
         pygame.time.set_timer(self.NEXTLEVEL, self.game_params.nextlevel_freq)
+        pygame.time.set_timer(self.ENEMYFIGHTERSPAWN, self.game_params.enemyfighterspawn_freq)
         self.fighter.reset()
         self.level_start_time = time.time()
         self.lives = 5
         self.fighter.shields = False
         self.fighter.zerog_torpedos = False
-        self.fighter.zerog_fired = 0
-
-        self.enemy_fighter_group.add(EnemyFighter(self))
+        self.fighter.zerog_fired = 0        
 
     def game_over(self):
         self.high_score = max([self.score, self.high_score])
@@ -841,6 +897,8 @@ class RelativityWars:
             elif event.type == self.POWERUPSPAWN:
                 power = random.choice(['shield', 'zerog_torpedo'])
                 self.powerup_group.add(Powerup(power, self))
+            elif event.type == self.ENEMYFIGHTERSPAWN:
+                self.enemy_fighter_group.add(EnemyFighter(self))
             elif event.type == self.NEXTLEVEL:
                 self.next_level_transition_start_time = time.time()
                 self.next_level_transition = True
