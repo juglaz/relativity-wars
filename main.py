@@ -30,7 +30,7 @@ def blit_alpha(target, source, opacity):
 
 class RWSprite(pygame.sprite.Sprite):
     GRAVITATIONAL_CONSTANT = 180
-    MAX_GRAVITY = 20
+    MAX_GRAVITY = 15
 
     def __init__(self, pos, velocity, game):
         super().__init__()
@@ -444,11 +444,10 @@ class EnemyFighter(DroneBase):
     direction = 0
     drag = 0.1
 
-    last_fired_time = time.time()
     fire_refresh = 3
     volley_size = 3
     intra_volley_wait = 0.2
-    volley_shots_fired = 0
+    volley_shots_fired = volley_size
 
     death_image = pygame.image.load('assets/fighter-death.png')
     death_sound = pygame.mixer.Sound('assets/fighter-death.wav')
@@ -464,6 +463,7 @@ class EnemyFighter(DroneBase):
 
     def __init__(self, game):
         super().__init__(game)
+        self.last_fired_time = time.time()
 
     def set_direction(self, gravity):
         unit_gravity = gravity / self.hypotenuse(gravity)
@@ -518,7 +518,7 @@ class EnemyFighter(DroneBase):
     def fire_volley(self):
         time_since_last_fire = time.time() - self.last_fired_time
         dist_from_fighter = self.hypotenuse(self.pos - self.game.fighter.pos)
-        if dist_from_fighter < self.proximity_dist and time_since_last_fire > self.fire_refresh:
+        if dist_from_fighter < self.hold_dist and time_since_last_fire > self.fire_refresh:
             self.fire()
             self.last_fired_time = time.time()
             self.volley_shots_fired = 1
@@ -671,11 +671,12 @@ class GameParams:
     
     def __init__(self, level):
         self.level = level
-        self.black_holes += level - 1
+        self.black_holes += 1 if self.level > 2 else 0
         self.powerupspawn_freq -= 1000 * (level - 1)
         self.dronespawn_freq = int(self.dronespawn_freq * 0.8**(level - 1))
         self.dronespawn_freq_ramp += 10 * (level - 1)
         self.enemyfighterspawn_freq = int(self.enemyfighterspawn_freq * 0.8**(level - 1))
+        self.lives += 2 * (level - 1)
 
 
 class RelativityWars:
@@ -780,7 +781,7 @@ class RelativityWars:
         pygame.time.set_timer(self.ENEMYFIGHTERSPAWN, self.game_params.enemyfighterspawn_freq)
         self.fighter.reset()
         self.level_start_time = time.time()
-        self.lives = 5
+        self.lives = self.game_params.lives
         self.fighter.shields = False
         self.fighter.zerog_torpedos = False
         self.fighter.zerog_fired = 0        
@@ -1023,5 +1024,6 @@ class RelativityWars:
             self.next_level_transition_start_time = 0
             self.next_level_image_scale = 0.1
             self.setup_game()
+
 
 RelativityWars().play()
